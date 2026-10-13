@@ -1,0 +1,35 @@
+[tools]
+"github:astral-sh/uv" = "latest" # Sadly required for installing python CLIs because mise has no pip backend
+luajit = "latest"
+
+[shell_alias]
+gb = "git checkout"
+gc = "git commit"
+go = "git checkout"
+gp = "git push"
+gu = "git reset HEAD~1 --mixed"
+
+[tasks.build]
+description = "Build the Umbra executable"
+run = "luajit ./src/main.lua build && sed -i '1i #!/usr/bin/env luajit' target/artifact.lua && chmod +x target/artifact.lua"
+
+[tasks.test]
+description = "Executes the toolkit's test corpus"
+run = "luajit ./tests/run.lua --corpus src"
+
+[tasks.verify]
+description = "Build twice and prove optimizing did not change behaviour"
+run = "luajit ./tests/verify.lua --dialect luau src/main.lua tests/exercise.lua"
+
+[tasks.fmt]
+description = "Format in place"
+run = "luajit ./src/main.lua fmt src --indent 4"
+
+[tasks.doc]
+description = "Build the API documentation"
+tools = {"pipx:zensical" = "latest"}
+run = """
+rm -f docs/API/*.md
+luajit ./src/main.lua doc --dialect luau --out docs/API src
+zensical build -f zensical.toml
+"""

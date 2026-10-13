@@ -1,0 +1,4 @@
+/target/
+/docs/API/
+/docs/site/
+package.lock
