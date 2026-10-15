@@ -23,13 +23,13 @@ run = "luajit ./tests/verify.lua --dialect luau src/main.lua tests/exercise.lua"
 
 [tasks.fmt]
 description = "Format in place"
-run = "luajit ./src/main.lua fmt src --indent 4"
+run = "luajit ./src/main.lua fmt --indent 4"
 
 [tasks.doc]
 description = "Build the API documentation"
-tools = {"pipx:zensical" = "latest"}
+tools = { "pipx:zensical" = "latest" }
 run = """
 rm -f docs/API/*.md
-luajit ./src/main.lua doc --dialect luau --out docs/API src
+luajit ./src/main.lua doc
 zensical build -f zensical.toml
 """
