@@ -51,10 +51,14 @@ local encoder = require("@json/src/encode.lua")
 local support = require("@json/src/support") -- tries support.lua, then support.luau
 ```
 
-When the file part is omitted, Umbra tries `init.lua`, `init.luau`, `main.lua`,
-`main.luau`, then `lib.lua` and `lib.luau`. Ordinary package-style imports
-such as `require("json")` use the same entry-file candidates. `@name/file` searches only inside
-that package and cannot traverse out of it. An `@alias` is resolved from the
+For project roots, module lookups try `src/` before the project root, so
+`@json/encoder` can resolve to `target/.../src/encoder.lua` or
+`target/.../src/encoder/init.lua`. With no file part, Umbra tries entry files
+in `src/` and then the project root: `init.lua`, `init.luau`, `main.lua`,
+`main.luau`, `lib.lua`, and `lib.luau`. Ordinary package-style imports such
+as `require("json")` use the same project-root lookup. `@name/file` searches
+only inside that package and cannot traverse out of it; relative imports from
+submodules stay relative to their containing directory. An `@alias` is resolved from the
 manifest of the package containing the `require`; a library's transitive
 dependencies are therefore private to that library, and must be declared in
 its own `package.toml`. Relative imports remain relative to the requiring

@@ -10,6 +10,7 @@ local check = require("process.check")
 local diagnostics = require("diag")
 
 local bundle = {}
+local generated = "BUNDLER_GENERATED"
 
 local function assemble(modules, order, entry_path)
     local parts = {
@@ -35,9 +36,11 @@ local function assemble(modules, order, entry_path)
     for _, piece in ipairs(parts) do
         cursor = cursor + #piece
     end
+    origin[#origin + 1] = { from = 1, to = cursor, path = generated }
     for _, path in ipairs(order) do
         local header = ("__bundle_modules[%q] = function(...)\n"):format(path)
         parts[#parts + 1] = header
+        origin[#origin + 1] = { from = cursor + 1, to = cursor + #header, path = generated }
         cursor = cursor + #header
         origin[#origin + 1] = {
             from = cursor + 1,
@@ -47,9 +50,12 @@ local function assemble(modules, order, entry_path)
         parts[#parts + 1] = modules[path]
         cursor = cursor + #modules[path]
         parts[#parts + 1] = "\nend\n"
+        origin[#origin + 1] = { from = cursor + 1, to = cursor + 5, path = generated }
         cursor = cursor + 5
     end
-    parts[#parts + 1] = ("return __bundle_require(%q, ...)\n"):format(entry_path)
+    local footer = ("return __bundle_require(%q, ...)\n"):format(entry_path)
+    parts[#parts + 1] = footer
+    origin[#origin + 1] = { from = cursor + 1, to = cursor + #footer, path = generated }
 
     local views = {}
     local function view(path)
@@ -65,6 +71,9 @@ local function assemble(modules, order, entry_path)
         end
         for _, span in ipairs(origin) do
             if offset >= span.from and offset <= span.to then
+                if span.path == generated then
+                    return { path = generated }
+                end
                 return { source = view(span.path), offset = offset - span.from + 1 }
             end
         end
@@ -79,6 +88,9 @@ local function context(modules, order, entry_path)
         module_count = #order,
         report = function(warning)
             local where = locate(warning.offset)
+            if where and where.path == generated then
+                return
+            end
             if where then
                 where.length = warning.length
             end

@@ -3,6 +3,7 @@ return function(h)
     local resolve = require("process.resolve")
     local collect = require("process.collect")
     local process_bundle = require("process.bundle")
+    local diagnostics = require("diag")
 
     local function expect(what, actual, expected)
         if actual ~= expected then
@@ -12,9 +13,10 @@ return function(h)
 
     local root = os.tmpname()
     os.remove(root)
-    assert(os.execute(("mkdir -p %s %s %s %s %s %s %s %s"):format(
+    assert(os.execute(("mkdir -p %s %s %s %s %s %s %s %s %s %s %s"):format(
         q(root .. "/sub"), q(root .. "/pkg"), q(root .. "/pkg_lib"), q(root .. "/vendor/lib"),
-        q(root .. "/vendor/core"), q(root .. "/vendor/package-lib"), q(root .. "/libentry"), q(root .. "/initentry")
+        q(root .. "/vendor/core"), q(root .. "/vendor/package-lib"), q(root .. "/libentry"), q(root .. "/initentry"),
+        q(root .. "/vendor/lib/src/nested"), q(root .. "/vendor/package-lib/src"), q(root .. "/src")
     )))
 
     local function write(path, text)
@@ -35,12 +37,14 @@ return function(h)
             'local pkg_lib = require("pkg_lib")',
             'local lib = require("lib")',
             'local aliased = require("@lib")',
+            'local aliased_module = require("@lib/module")',
+            'local aliased_nested = require("@lib/nested")',
             'local package_lib = require("@package-lib")',
             'local aliased_file = require("@lib/helper.lua")',
             'local nested = require("@lib/nested.lua")',
             'local named = require("@lib/named.lua")',
             'local external = require("umbra_external")',
-            "return { a = a, b = b, again = again, pkg = pkg, pkg_lib = pkg_lib, lib = lib, aliased = aliased, package_lib = package_lib, aliased_file = aliased_file, nested = nested, named = named, external = external, s = s }",
+            "return { a = a, b = b, again = again, pkg = pkg, pkg_lib = pkg_lib, lib = lib, aliased = aliased, aliased_module = aliased_module, aliased_nested = aliased_nested, package_lib = package_lib, aliased_file = aliased_file, nested = nested, named = named, external = external, s = s }",
             "",
         }, "\n")
     )
@@ -49,9 +53,14 @@ return function(h)
     write("sub/b.lua", "B_RUNS = (B_RUNS or 0) + 1\n")
     write("pkg/init.lua", 'return require("./helper")\n')
     write("pkg/helper.lua", 'return "helper"\n')
+    write("src/helper.lua", 'return "project src helper"\n')
+    write("src/project_module.lua", 'return "project src module"\n')
     write("pkg_lib/lib.lua", 'return require("./helper")\n')
     write("pkg_lib/helper.lua", 'return "lib entry helper"\n')
     write("vendor/lib/init.lua", 'return "vendored"\n')
+    write("vendor/lib/src/init.lua", 'return "src entry"\n')
+    write("vendor/lib/src/module.lua", 'return "src module"\n')
+    write("vendor/lib/src/nested/init.lua", 'return "src nested module"\n')
     write("vendor/lib/helper.lua", 'return "aliased helper"\n')
     write("vendor/lib/nested.lua", 'return require("@core")\n')
     write("vendor/lib/named.lua", "return (...)\n")
@@ -69,6 +78,7 @@ return function(h)
     write("default_project/src/lib.lua", "return {}\n")
     expect("default build entry accepts src/lib.lua", resolve.default_entry(root .. "/default_project"), root .. "/default_project/src/lib.lua")
     expect("dotted names resolve", resolve.module("sub.b", root, { root }), root .. "/sub/b.lua")
+    expect("project module names search src", resolve.module("project_module", root, { root }), root .. "/src/project_module.lua")
     expect("packages resolve to init", resolve.module("pkg", root, root), root .. "/pkg/init.lua")
     expect("package modules resolve to lib.lua", resolve.module("pkg_lib", root, { root }), root .. "/pkg_lib/lib.lua")
     expect("relative names resolve", resolve.module("./helper", root .. "/pkg", {}), root .. "/pkg/helper.lua")
@@ -79,8 +89,10 @@ return function(h)
     expect("entry directories accept lib.lua", resolve.entry(root .. "/libentry"), root .. "/libentry/lib.lua")
     expect("entry directories accept init.lua", resolve.entry(root .. "/initentry"), root .. "/initentry/init.lua")
     expect("@module paths resolve", resolve.module("@lib/helper.lua", root, { lib = root .. "/vendor/lib" }), root .. "/vendor/lib/helper.lua")
-    expect("@module defaults to init.lua", resolve.module("@lib", root, { lib = root .. "/vendor/lib" }), root .. "/vendor/lib/init.lua")
-    expect("@module falls back to lib.lua", resolve.module("@package-lib", root, { ["package-lib"] = root .. "/vendor/package-lib" }), root .. "/vendor/package-lib/lib.lua")
+    expect("@module paths search project src", resolve.module("@lib/module", root, { lib = root .. "/vendor/lib" }), root .. "/vendor/lib/src/module.lua")
+    expect("@module paths accept src init files", resolve.module("@lib/nested", root, { lib = root .. "/vendor/lib" }), root .. "/vendor/lib/src/nested/init.lua")
+    expect("@module defaults to src init.lua", resolve.module("@lib", root, { lib = root .. "/vendor/lib" }), root .. "/vendor/lib/src/init.lua")
+    expect("@module falls back to root init.lua", resolve.module("@package-lib", root, { ["package-lib"] = root .. "/vendor/package-lib" }), root .. "/vendor/package-lib/lib.lua")
     expect("@module imports cannot escape their package", resolve.module("@lib/../../main.lua", root, { lib = root .. "/vendor/lib" }), nil)
 
     local calls = collect.requires(
@@ -105,7 +117,7 @@ return function(h)
     } })
     expect("ghost in a comment is not collected", modules[root .. "/ghost.lua"], nil)
     expect("entry is collected last", order[#order], root .. "/main.lua")
-    expect("each module is collected once", #order, 13)
+    expect("each module is collected once", #order, 16)
 
     local function run(source)
         local chunk, err = loadstring(source)
@@ -134,7 +146,9 @@ return function(h)
         expect(label .. ": relative requires inside packages", result.pkg, "helper")
         expect(label .. ": package lib.lua entry", result.pkg_lib, "lib entry helper")
         expect(label .. ": extra roots", result.lib, "vendored")
-        expect(label .. ": @module dependency import", result.aliased, "vendored")
+        expect(label .. ": @module dependency import", result.aliased, "src entry")
+        expect(label .. ": @module module in src", result.aliased_module, "src module")
+        expect(label .. ": @module directory in src", result.aliased_nested, "src nested module")
         expect(label .. ": dependency lib.lua entry", result.package_lib, "transitive dependency")
         expect(label .. ": @module/file import", result.aliased_file, "aliased helper")
         expect(label .. ": package-scoped transitive dependency", result.nested, "transitive dependency")
@@ -153,10 +167,12 @@ return function(h)
     local options = {
         dialect = "lua", entry = root .. "/main.lua", paths = { root .. "/vendor" }, dependencies = dependencies,
     }
+    local warning_count = diagnostics.counts.warning
     options.plain = true
     check_result("plain", (process_bundle.run(h.ecl, options)))
     options.plain, options.shake = false, false
     check_result("optimised", (process_bundle.run(h.ecl, options)))
+    expect("generated bundle warnings are suppressed", diagnostics.counts.warning, warning_count)
 
     for _, entry in ipairs({ root .. "/libentry", root .. "/initentry" }) do
         local built = process_bundle.run(h.ecl, {

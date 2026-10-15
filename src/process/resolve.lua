@@ -107,7 +107,7 @@ end
     @return string -- the resolved module path
 ]=]
 function resolver.module(spec, from_dir, roots)
-    local bases = {}
+    local bases, project_bases = {}, {}
     if spec:sub(1, 1) == "@" then
         local name, file = spec:match("^@([%w_-]+)/(.*)$")
         if file == "" then
@@ -125,7 +125,9 @@ function resolver.module(spec, from_dir, roots)
                 end
                 file = relative
             end
-            bases[1] = resolver.normalise(root .. (file and "/" .. file or ""))
+            local base = resolver.normalise(root .. (file and "/" .. file or ""))
+            project_bases[1] = resolver.normalise(root .. "/src" .. (file and "/" .. file or ""))
+            bases[1] = base
         end
     elseif spec:sub(1, 1) == "/" then
         bases[1] = resolver.normalise(spec)
@@ -136,7 +138,15 @@ function resolver.module(spec, from_dir, roots)
             roots = { roots }
         end
         for _, root in ipairs(roots or {}) do
-            bases[#bases + 1] = resolver.normalise(root .. "/" .. spec:gsub("%.", "/"))
+            local relative = spec:gsub("%.", "/")
+            project_bases[#project_bases + 1] = resolver.normalise(root .. "/src/" .. relative)
+            bases[#bases + 1] = resolver.normalise(root .. "/" .. relative)
+        end
+    end
+    for _, base in ipairs(project_bases) do
+        local candidates = { base, base .. ".lua", base .. ".luau", base .. "/init.lua", base .. "/init.luau", base .. "/main.lua", base .. "/main.luau", base .. "/lib.lua", base .. "/lib.luau" }
+        for _, candidate in ipairs(candidates) do
+            if read(candidate) then return resolver.normalise(candidate) end
         end
     end
     for _, base in ipairs(bases) do
