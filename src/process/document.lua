@@ -294,11 +294,33 @@ function documentation.run(library, options)
         end
     end
 
-    local classes, class_order = {}, {}
+    local classes, class_order, class_decl_order, class_paths, class_names = {}, {}, {}, {}, {}
 
-    local function class_for(name)
-        if not classes[name] then
-            classes[name] = {
+    local function class_for(name, parent, declared)
+        local path = parent and (parent.path .. "." .. name) or name
+        local existing = class_paths[path]
+        if existing then return classes[existing] end
+        local id
+        if declared and parent then
+            local placeholder = classes["\0" .. name]
+            if placeholder and placeholder.id ~= parent.id and placeholder.kind == nil and not placeholder.parent then
+                id = placeholder.id
+                class_paths[placeholder.path] = nil
+                placeholder.path = path
+                placeholder.parent = parent.id
+                class_paths[path] = id
+                if not parent.child_seen[id] then
+                    parent.child_seen[id] = true
+                    parent.children[#parent.children + 1] = id
+                end
+                return placeholder
+            end
+        end
+        id = parent and (parent.id .. "\0" .. name) or ("\0" .. name)
+        if not classes[id] then
+            classes[id] = {
+                id = id,
+                path = path,
                 name = name,
                 desc = "",
                 source = nil,
@@ -309,13 +331,44 @@ function documentation.run(library, options)
                 methods = {},
                 children = {},
                 child_seen = {},
-                parent = nil,
+                parent = parent and parent.id or nil,
                 prop_seen = {},
                 type_seen = {},
             }
-            class_order[#class_order + 1] = name
+            class_order[#class_order + 1] = id
+            class_paths[path] = id
+            class_names[name] = class_names[name] or {}
+            class_names[name][#class_names[name] + 1] = id
+            if parent and not parent.child_seen[id] then
+                parent.child_seen[id] = true
+                parent.children[#parent.children + 1] = id
+            end
         end
-        return classes[name]
+        return classes[id]
+    end
+
+    local function find_class(name)
+        if classes[name] then return classes[name] end
+        local id = class_paths[name]
+        if id then return classes[id] end
+        local matches = class_names[name]
+        if matches then
+            if #matches == 1 then return classes[matches[1]] end
+            return nil
+        end
+    end
+
+    local function class_target(name)
+        local found = find_class(name)
+        if found then return found end
+        if class_names[name] then return nil end
+        local parent_name, child_name = name:match("^(.*)%.([^%.]+)$")
+        if parent_name then
+            local parent = class_target(parent_name)
+            if parent then return class_for(child_name, parent) end
+            return nil
+        end
+        return class_for(name)
     end
 
     local drifted, skipped = 0, 0
@@ -446,9 +499,17 @@ function documentation.run(library, options)
             end
 
             if kind then
-                local cls = class_for(name)
+                local parent = block.within and class_target(block.within)
+                if block.within and not parent then
+                    diagnostics.warn(("`@within %s` is ambiguous"):format(block.within), nil, rel)
+                    drifted = drifted + 1
+                end
+                local cls = class_for(name, parent, true)
                 cls.source = cls.source or rel
-                cls.kind = cls.kind or kind
+                if not cls.kind then
+                    cls.kind = kind
+                    class_decl_order[#class_decl_order + 1] = cls.id
+                end
                 if block.location and block.location ~= "" then
                     cls.location = block.location
                 end
@@ -464,18 +525,8 @@ function documentation.run(library, options)
                 add_once(cls.properties, cls.prop_seen, block.props)
                 add_once(cls.types, cls.type_seen, block.types)
 
-                local owner = block.within
-                if owner and owner ~= name and cls.parent == nil then
-                    local parent = class_for(owner)
-                    cls.parent = owner
-                    if not parent.child_seen[name] then
-                        parent.child_seen[name] = true
-                        parent.children[#parent.children + 1] = name
-                    end
-                end
-
                 if kind == "class" then
-                    scopes[#scopes + 1] = { at = comment.start, name = name }
+                    scopes[#scopes + 1] = { at = comment.start, name = cls.id }
                 end
             elseif block["function"] or block.method then
                 block.at = comment.start
@@ -483,9 +534,14 @@ function documentation.run(library, options)
             elseif #block.props > 0 or #block.types > 0 then
                 local target = block.within or scope_at_pending(comment.start)
                 if target then
-                    local cls = class_for(target)
-                    add_once(cls.properties, cls.prop_seen, block.props)
-                    add_once(cls.types, cls.type_seen, block.types)
+                    local cls = class_target(target)
+                    if cls then
+                        add_once(cls.properties, cls.prop_seen, block.props)
+                        add_once(cls.types, cls.type_seen, block.types)
+                    else
+                        diagnostics.warn(("`@within %s` is ambiguous"):format(target), nil, rel)
+                        drifted = drifted + 1
+                    end
                 end
             end
         end
@@ -534,10 +590,12 @@ function documentation.run(library, options)
                 matched[named_key] = true
             end
 
-            local declared_on = decl.owner and classes[decl.owner] and decl.owner
+            local declared_class = decl.owner and find_class(decl.owner)
+            local declared_on = declared_class and declared_class.id
             local owner = block.within or declared_on or scope_at(decl.start or 0)
             if owner and documented(block) then
-                local cls = class_for(owner)
+                local cls = class_target(owner)
+                if cls then
                 if #block.props > 0 then
                     add_once(cls.properties, cls.prop_seen, block.props)
                 elseif #block.types > 0 or decl.kind == "type" then
@@ -609,6 +667,10 @@ function documentation.run(library, options)
                         unreleased = block.unreleased,
                     }
                 end
+                else
+                    diagnostics.warn(("`@within %s` is ambiguous"):format(owner), nil, rel)
+                    drifted = drifted + 1
+                end
             elseif owner and decl.kind == "function" then
                 skipped = skipped + 1
             end
@@ -618,7 +680,11 @@ function documentation.run(library, options)
                 local name = block["function"] or block.method
                 local target = block.within or scope_at_pending(block.at or 0)
                 if target then
-                    local cls = class_for(target)
+                    local cls = class_target(target)
+                    if not cls then
+                        diagnostics.warn(("`@within %s` is ambiguous"):format(target), nil, rel)
+                        drifted = drifted + 1
+                    else
                     local into = block.method and cls.methods or cls.functions
                     into[#into + 1] = {
                         name = name,
@@ -636,6 +702,7 @@ function documentation.run(library, options)
                         realm = block.realm,
                         unreleased = block.unreleased,
                     }
+                    end
                 else
                     diagnostics.warn(
                         ("`@%s %s` has nowhere to go"):format(block.method and "method" or "function", name),
@@ -655,10 +722,14 @@ function documentation.run(library, options)
     for _, name in ipairs(class_order) do
         local cls = classes[name]
         if cls.kind == nil and #cls.children > 0 then
+            local children = {}
+            for _, id in ipairs(cls.children) do
+                children[#children + 1] = classes[id].path
+            end
             diagnostics.warn(
-                ("`@within %s` names no `@class` or `@interface`"):format(name),
+                ("`@within %s` names no `@class` or `@interface`"):format(cls.path),
                 nil,
-                ("declared only as the parent of: %s"):format(table.concat(cls.children, ", "))
+                ("declared only as the parent of: %s"):format(table.concat(children, ", "))
             )
             drifted = drifted + 1
         end
@@ -763,24 +834,24 @@ function documentation.run(library, options)
     local render_children
 
     local function render_child(md, cls, depth, seen)
-        if seen[cls.name] then
-            diagnostics.warn(("`%s` is its own ancestor via `@within`"):format(cls.name), nil, cls.source)
+        if seen[cls.id] then
+            diagnostics.warn(("`%s` is its own ancestor via `@within`"):format(cls.path), nil, cls.source)
             return
         end
-        seen[cls.name] = true
+        seen[cls.id] = true
         write_notices(md, cls)
         if cls.desc and cls.desc ~= "" then
             md[#md + 1] = cls.desc .. "\n\n"
         end
         render_members(md, cls, depth)
         render_children(md, cls, depth, seen)
-        seen[cls.name] = nil
+        seen[cls.id] = nil
     end
 
     function render_children(md, cls, depth, seen)
         local children = {}
-        for _, name in ipairs(cls.children) do
-            local child = classes[name]
+        for _, id in ipairs(cls.children) do
+            local child = classes[id]
             if visible(child) then
                 children[#children + 1] = child
             end
@@ -790,7 +861,7 @@ function documentation.run(library, options)
         end
         md[#md + 1] = ("%s Children\n\n"):format(heading(depth))
         for _, child in ipairs(children) do
-            md[#md + 1] = ("%s `%s.%s`\n\n"):format(heading(depth + 1), cls.name, child.name)
+            md[#md + 1] = ("%s `%s`\n\n"):format(heading(depth + 1), child.path)
             render_child(md, child, depth + 2, seen)
         end
     end
@@ -812,14 +883,14 @@ function documentation.run(library, options)
     end
 
     -- A `@within` cycle has no root, so its first class becomes one.
-    for _, name in ipairs(class_order) do
+    for _, name in ipairs(class_decl_order) do
         local seen, at = {}, classes[name]
-        while at and at.parent and not seen[at.name] do
-            seen[at.name] = true
+        while at and at.parent and not seen[at.id] do
+            seen[at.id] = true
             at = classes[at.parent]
         end
-        if at and at.name == name and at.parent then
-            diagnostics.warn(("`%s` is its own ancestor via `@within`"):format(name), nil, at.source)
+        if at and at.id == name and at.parent then
+            diagnostics.warn(("`%s` is its own ancestor via `@within`"):format(at.path), nil, at.source)
             local former = classes[at.parent]
             for n = #former.children, 1, -1 do
                 if former.children[n] == name then
@@ -838,7 +909,7 @@ function documentation.run(library, options)
             md[#md + 1] = ("# %s\n\n%s\n\n"):format(cls.name, cls.desc ~= "" and cls.desc or "No description provided.")
             write_notices(md, cls)
             render_members(md, cls, 2)
-            render_children(md, cls, 2, { [cls.name] = true })
+            render_children(md, cls, 2, { [cls.id] = true })
 
             local location = safe_location(cls.location)
             local directory = location ~= "" and (out_dir .. "/" .. location) or out_dir

@@ -81,7 +81,11 @@ name on the class named by its `@within` first, then any declaration of that
 name, so two blocks for `make` on different classes stay separate. If a
 matching declaration exists, the block overrides the documentation read from
 the syntax; if not, the block is still emitted on the class named by
-`@within`.
+`@within`. Child classes and interfaces are scoped by their parent, so a
+`Node` may appear under both `Tree` and `Graph`. Use the dotted path when
+attaching a member to one of same-named children, for example
+`@within Tree.Node` or `@within Graph.Node`. Dotted paths can name deeper
+children too, such as `@within Tree.Node.Leaf`.
 
 ## Tags
 
@@ -90,7 +94,7 @@ the syntax; if not, the block is still emitted on the class named by
 | `@class` | `@class Name` | Start a class page. |
 | `@interface` | `@interface Name` | Start an interface page. |
 | `@location` | `@location path/to/directory` | Write the class page under this directory, relative to `--out`; missing directories are created. |
-| `@within` | `@within Name` | Attach this block to a class. |
+| `@within` | `@within Name` or `@within Parent.Child` | Attach this block to a class or scoped child. |
 | `@function` | `@function name` | Document a function away from its declaration. |
 | `@method` | `@method name` | Document a method away from its declaration. |
 | `@param` | `@param name type -- description` | Describe a parameter. `@arg` is a synonym. |

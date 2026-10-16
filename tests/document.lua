@@ -133,6 +133,28 @@ return Merge
         fail("cycle warning did not name the file declaring the class", cycle_diagnostics)
     end
 
+    local scoped = generate_files({
+        ["00-children.lua"] = table.concat({
+            "--[=[", "    Tree node.", "    @interface Node", "    @within Tree", "    .treeValue number", "]=]",
+            "--[=[", "    Graph node.", "    @interface Node", "    @within Graph", "    .graphValue string", "]=]",
+            "--[=[", "    @within Tree.Node", "    .treeOnly boolean", "]=]",
+            "--[=[", "    @within Graph.Node", "    .graphOnly boolean", "]=]",
+        }, "\n") .. "\n",
+        ["10-parents.lua"] = table.concat({
+            "--[=[", "    A tree.", "    @class Tree", "]=]",
+            "--[=[", "    A graph.", "    @class Graph", "]=]",
+        }, "\n") .. "\n",
+    })
+    local tree, graph = scoped.Tree or "", scoped.Graph or ""
+    if not tree:find("Tree.Node", 1, true) or not tree:find("treeValue", 1, true)
+        or not tree:find("treeOnly", 1, true) or tree:find("graphOnly", 1, true) then
+        fail("scoped children with duplicate names stay under Tree", tree)
+    end
+    if not graph:find("Graph.Node", 1, true) or not graph:find("graphValue", 1, true)
+        or not graph:find("graphOnly", 1, true) or graph:find("treeOnly", 1, true) then
+        fail("scoped children with duplicate names stay under Graph", graph)
+    end
+
     if not pages.Node then
         fail("docs", "`@interface Node` did not get its own page")
     elseif not pages.Node:find("children", 1, true) then
