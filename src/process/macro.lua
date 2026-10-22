@@ -178,10 +178,16 @@ local function find(tokens, info, ecl)
                 record.body_first = info.at[first_statement.span.start]
                 record.body_last = info.ending[last_statement.span["end"]]
                 record.ends_in_return = last_statement.kind == K.STMT_KIND_RETURN
-                if record.ends_in_return and syntax.count(last_statement.data.return_) == 1 then
-                    record.tail_result = syntax.item(last_statement.data.return_, 1)
+                if record.ends_in_return then
                     record.return_first = info.at[last_statement.span.start]
                     record.return_last = info.ending[last_statement.span["end"]]
+                    record.tail_results = {}
+                    syntax.each(last_statement.data.return_, function(value)
+                        record.tail_results[#record.tail_results + 1] = value
+                    end)
+                    if #record.tail_results == 1 then
+                        record.tail_result = record.tail_results[1]
+                    end
                 end
                 if
                     syntax.count(statements) == 1
@@ -275,7 +281,8 @@ local function inspect(record, info, ecl)
     end
     scan(record.body.body)
     record.returns = returns
-    record.tail_return = return_count == 1 and record.ends_in_return and record.tail_result ~= nil
+    record.tail_count = #(record.tail_results or {})
+    record.tail_return = return_count == 1 and record.ends_in_return and record.tail_count > 0
 
     if record.kind == "expression" then
         local deferred, closure, order, positions, calls = false, false, {}, {}, {}
@@ -592,9 +599,10 @@ local function substitution_refusal(site, ecl)
     local record = site.record
     if record.kind == "statement" then
         if site.position == "expression" then
-            -- A tail return can supply this value after its earlier
-            -- statements hoist above the containing statement.
-            if record.tail_return then
+            -- A single tail result can supply this value after its earlier
+            -- statements hoist above the containing statement. A multi-result
+            -- return cannot substitute into an arbitrary expression.
+            if record.tail_return and record.tail_count == 1 then
                 return nil
             end
             return "a statement macro is used as an expression"
@@ -982,7 +990,7 @@ local function refusal(site, ecl, info)
     local record = site.record
     if record.kind == "statement" and (site.position == "hoist" or site.position == "expression") then
         local supplies = record.tail_return or (site.position == "hoist" and not record.returns)
-        if not supplies then
+        if not supplies or reason then
             return reason
         end
         site.statement, site.spills = lift_point(site, info, ecl)
@@ -1033,7 +1041,10 @@ local function expansion(tokens, info, site, id, ecl, taken)
             local before = #out
             prefix()
             if #out > before then
-                emit(synth(";", "Semicolon", ecl))
+                local last = out[#out]
+                if last.text ~= "\n" and last.text ~= ";" then
+                    emit(synth(";", "Semicolon", ecl))
+                end
                 emit(synth("\n", nil, ecl))
             end
         end
@@ -1378,24 +1389,31 @@ local function expansion(tokens, info, site, id, ecl, taken)
             end
         end
         local function tail()
-            if not record.tail_result then
+            local results = record.tail_results or {}
+            if #results == 0 then
                 -- A function that never returns supplies nil to the
                 -- initializer or assignment after its side effects.
                 emit(synth("nil", "Nil", ecl))
                 return
             end
-            local first, last = range(info, record.tail_result)
-            for at = first, last do
-                local owner = info.owner[at]
-                local slot = owner and (record.param_slot[owner] or (owner == record.self_binding and 0))
-                if record.force and slot and by_slot[slot] then
-                    emit(synth("(", "LeftParenthesis", ecl))
-                    for _, token in ipairs(argument(by_slot[slot])) do
-                        emit(token)
+            for n, result in ipairs(results) do
+                if n > 1 then
+                    emit(synth(",", "Comma", ecl))
+                    emit(synth(" ", nil, ecl))
+                end
+                local first, last = range(info, result)
+                for at = first, last do
+                    local owner = info.owner[at]
+                    local slot = owner and (record.param_slot[owner] or (owner == record.self_binding and 0))
+                    if record.force and slot and by_slot[slot] then
+                        emit(synth("(", "LeftParenthesis", ecl))
+                        for _, token in ipairs(argument(by_slot[slot])) do
+                            emit(token)
+                        end
+                        emit(synth(")", "RightParenthesis", ecl))
+                    else
+                        emit(hoisted(at))
                     end
-                    emit(synth(")", "RightParenthesis", ecl))
-                else
-                    emit(hoisted(at))
                 end
             end
         end

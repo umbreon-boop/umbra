@@ -5,6 +5,10 @@ return function(h)
 
     for _, case in ipairs({
             "--@inline\nlocal function double(x) return x * 2 end\nreturn double(5)\n",
+            "--@inline\nlocal function pair(x) return x, x * 2 end\nlocal a, b = pair(3)\nreturn a .. ':' .. b\n",
+            "--@inline\nlocal function pair(x) return x, x * 2 end\nlocal a = pair(3)\nreturn a\n",
+            "local out = {}\n--@inline\nlocal function pair(x) out[#out + 1] = x return x, x * 2 end\n"
+            .. "local a, b = pair(3)\nreturn a .. ':' .. b .. ':' .. table.concat(out, ',')\n",
             "--@inline\nlocal function add(a, b) return a + b end\nreturn add(1, 2) * 3\n",
             "--@inline\nlocal function add(a, b) return a + b end\nreturn add(add(1, 2), 4)\n",
             "local k = 6\n--@inline\nlocal function square(x) return x * x end\nreturn square(k)\n",
@@ -109,6 +113,8 @@ return function(h)
             .. "--@inline\nlocal function twice(x) return x + x end\nreturn o:add(twice(f()))\n",
             "local function f() return 1 end\n--@inline\nlocal function twice(x) return x + x end\n"
             .. "while twice(f()) < 3 do end\n",
+            "--@inline\nlocal function pair(x) return x, x * 2 end\n"
+            .. "local a = pair(3) + 1\nreturn a\n",
         }) do
         local out, report = macro.expand(ecl.tokens(case, "lua"), "lua", ecl)
         if report.expanded ~= 0 then
