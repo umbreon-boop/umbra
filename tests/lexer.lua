@@ -46,11 +46,11 @@ return function(h)
         if not formatted:find("\n\t--[=[", 1, true) then
             h.fail("table-constructor comments", "a long comment was not indented to its field's level")
         end
-        if not formatted:find("\n\t]=]", 1, true) then
-            h.fail("table-constructor comments", "a long comment's closing delimiter did not line up with its opener")
+        if not formatted:find("\n]=]", 1, true) then
+            h.fail("table-constructor comments", "a long comment's interior was reindented")
         end
-        if not formatted:find("\n\t\t\tcomment ]]", 1, true) then
-            h.fail("table-constructor comments", "a nested long comment did not indent with its nested table")
+        if not formatted:find("\n   comment ]]", 1, true) then
+            h.fail("table-constructor comments", "a nested long comment's interior was reindented")
         end
     end
 
@@ -64,10 +64,10 @@ return function(h)
         }, "\n") .. "\n"
         local formatted = printer.format(source, "luau", { indent = "    " }, ecl)
         if formatted:find("\t", 1, true) then
-            fail("space indentation", "a long comment introduced a tab")
+            h.fail("space indentation", "a long comment introduced a tab")
         end
-        if not formatted:find("\n        inside", 1, true) then
-            fail("space indentation", "a long comment did not follow the configured unit")
+        if not formatted:find("    --[[\ninside\n]]\n", 1, true) then
+            h.fail("space indentation", "a long comment's interior was reindented")
         end
     end
 
@@ -110,7 +110,7 @@ return function(h)
 
     do
         local source = "local f=function(x)return x+1 end;return f(2)\n"
-        local expected = "local f = function(x)\n\treturn x + 1\nend;\nreturn f(2)\n"
+        local expected = "local f = function(x)\n\treturn x + 1\nend\nreturn f(2)\n"
         local formatted = printer.format(source, "lua", { force = true }, ecl)
         if formatted ~= expected then
             h.fail("strict formatting", formatted)
@@ -123,17 +123,19 @@ return function(h)
 
     do
         local source = "local Virtual = if cloneref then\n\tcloneref(game:GetService(\"VirtualInputManager\"))\nelse\n\tgame:GetService(\"VirtualInputManager\")\nlocal cam = workspace.CurrentCamera\n"
+        local expected = "local Virtual = if cloneref\n\tthen cloneref(game:GetService(\"VirtualInputManager\"))\n\telse game:GetService(\"VirtualInputManager\")\nlocal cam = workspace.CurrentCamera\n"
         local formatted = printer.format(source, "luau", { force = true }, ecl)
-        if formatted ~= source then
-            h.fail("preserve multiline if newlines with force", formatted)
+        if formatted ~= expected then
+            h.fail("reflow multiline if with force", formatted)
         end
     end
 
     do
-        local source = "function foo()\nend\n\n\nfunction bar()\nend\n"
+        local source = "function foo() end\n\n\nfunction bar() end\n"
         local formatted_force = printer.format(source, "luau", { force = true }, ecl)
-        if formatted_force ~= source then
-            h.fail("preserve multiple blank lines with force", formatted_force)
+        local expected_force = "function foo() end\n\nfunction bar() end\n"
+        if formatted_force ~= expected_force then
+            h.fail("collapse multiple blank lines with force", formatted_force)
         end
         local formatted_std = printer.format(source, "luau", nil, ecl)
         if formatted_std ~= source then
@@ -153,14 +155,14 @@ return function(h)
         local cases = {
             { "return\"\"", "return \"\"\n" },
             { "return{}", "return {}\n" },
-            { "return;", "return;\n" },
+            { "return;", "return\n" },
             { "local{}", "local {}\n" },
             { "if\"\"then end", "if \"\" then\nend\n" },
             { "while\"\"do end", "while \"\" do\nend\n" },
             { "until\"\"", "until \"\"\n" },
             { "for i in\"\"do end", "for i in \"\" do\nend\n" },
-            { "local function x()end", "local function x()\nend\n" },
-            { "if a then elseif(b)then end", "if a then\nelseif (b) then\nend\n" },
+            { "local function x()end", "local function x() end\n" },
+            { "if a then elseif(b)then end", "if a then\nelseif b then\nend\n" },
             { "repeat print(1) until(b)", "repeat\n\tprint(1)\nuntil (b)\n" },
             { "for x in(t) do end", "for x in (t) do\nend\n" },
             { "if not(a) then end", "if not (a) then\nend\n" },

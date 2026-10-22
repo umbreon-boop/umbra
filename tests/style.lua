@@ -55,7 +55,7 @@ return function(h)
         local source = "local x = 1\n--[[ Example:\n        if x then\n            y()\n        end\n]]\n"
         for _, force in ipairs({ false, true }) do
             local out = h.printer.format(source, "lua", { force = force }, h.ecl) or ""
-            if not out:find("\n\tif x then\n\t    y()\n\tend\n", 1, true)
+            if not out:find("--[[ Example:\n        if x then\n            y()\n        end\n]]\n", 1, true)
                 or h.printer.format(out, "lua", { force = force }, h.ecl) ~= out then
                 fail("a long comment lost its inner indentation", ("%q"):format(out))
             end

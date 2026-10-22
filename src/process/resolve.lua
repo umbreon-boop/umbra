@@ -15,6 +15,26 @@ local function read(path)
     return text
 end
 
+local function exists(path)
+    local handle = io.open(path, "rb")
+    if not handle then
+        return false
+    end
+    local first = handle:read(1)
+    handle:close()
+    if first ~= nil then
+        return true
+    end
+    -- Some platforms let directories be opened for reading. An empty file and
+    -- a directory both yield no bytes, so probe for a child entry.
+    local probe = io.open(path .. "/.", "rb")
+    if probe then
+        probe:close()
+        return false
+    end
+    return true
+end
+
 --[=[
     The directory part of `path`, or `.` when it has none.
 
@@ -44,13 +64,13 @@ end
 ]=]
 function resolver.entry(path)
     for _, candidate in ipairs({ path, path .. ".lua", path .. ".luau" }) do
-        if read(candidate) ~= nil then
+        if exists(candidate) then
             return candidate
         end
     end
     for _, name in ipairs({ "init.lua", "init.luau", "main.lua", "main.luau", "lib.lua", "lib.luau" }) do
         local candidate = path .. "/" .. name
-        if read(candidate) ~= nil then
+        if exists(candidate) then
             return candidate
         end
     end
@@ -71,7 +91,7 @@ function resolver.default_entry(root)
         "main.lua", "main.luau", "init.lua", "init.luau", "lib.lua", "lib.luau",
     }) do
         local candidate = root == "." and name or root .. "/" .. name
-        if read(candidate) ~= nil then
+        if exists(candidate) then
             return candidate
         end
     end
@@ -146,7 +166,7 @@ function resolver.module(spec, from_dir, roots)
     for _, base in ipairs(project_bases) do
         local candidates = { base, base .. ".lua", base .. ".luau", base .. "/init.lua", base .. "/init.luau", base .. "/main.lua", base .. "/main.luau", base .. "/lib.lua", base .. "/lib.luau" }
         for _, candidate in ipairs(candidates) do
-            if read(candidate) then return resolver.normalise(candidate) end
+            if exists(candidate) then return resolver.normalise(candidate) end
         end
     end
     for _, base in ipairs(bases) do
@@ -162,7 +182,7 @@ function resolver.module(spec, from_dir, roots)
             base .. "/lib.luau",
         }
         for _, candidate in ipairs(candidates) do
-            if read(candidate) then
+            if exists(candidate) then
                 return resolver.normalise(candidate)
             end
         end

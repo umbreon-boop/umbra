@@ -51,6 +51,27 @@ return function(h)
             "local n = 1\nlocal function f() n = 10 return 1 end\n--@inline\nlocal function twice(x) return x + x end\n--@macro\nlocal function double(x) return x + x end\nreturn twice(f()) + double(3)\n",
             "_G.G_SAFE = 1\nlocal function change() rawset(_G, 'G_SAFE', 9) return 1 end\n--@inline\nlocal function twice(x) return x + x end\nreturn G_SAFE + twice(change())\n",
             "local t = setmetatable({}, { __index = function() return 4 end })\nlocal function f() rawset(t, 'x', 9) return 1 end\n--@inline\nlocal function twice(x) return x + x end\nreturn t.x + twice(f())\n",
+            "--@inline\nlocal function id(x) return x end\nreturn id{1}\n",
+            "--@inline\nlocal function id(x) return x end\nreturn id'x'\n",
+            "local order = {}\nlocal function arg() order[#order + 1] = 'arg' return 1 end\n"
+            .. "--@inline\nlocal function ping() order[#order + 1] = 'body' end\nping(arg())\n"
+            .. "return table.concat(order, ',')\n",
+            "local n = 0\nlocal function bump() n = n + 1 return n end\n"
+            .. "--@inline\nlocal function ping() n = n + 10 end\nping(bump(), bump())\nreturn n\n",
+            "local seen = {}\n--@inline\nlocal function mark(x) seen[#seen + 1] = x end\n"
+            .. "local a = mark(3)\nreturn tostring(a), #seen, seen[1]\n",
+            "local seen = {}\nlocal t = {}\n--@inline\nlocal function mark(x) seen[#seen + 1] = x end\n"
+            .. "t.x = mark(4)\nreturn tostring(t.x), #seen, seen[1]\n",
+            "local out = {}\n--@inline\nlocal function value(x)\n  out[#out + 1] = x\n  local y = x * 2\n  return y\nend\n"
+            .. "if value(3) > 5 then out[#out + 1] = 'yes' end\nreturn table.concat(out, ',')\n",
+            "local out = {}\n--@inline\nlocal function value(x)\n  out[#out + 1] = x\n  return x * 2\nend\n"
+            .. "return 1 + value(3), table.concat(out, ',')\n",
+            "local out = {}\nlocal function add(a, b) return a + b end\n"
+            .. "--@inline\nlocal function value(x)\n  out[#out + 1] = x\n  return x * 2\nend\n"
+            .. "return add(1, value(3)), table.concat(out, ',')\n",
+            "local out = {}\n--@inline\nlocal function start(x)\n  out[#out + 1] = x\n  local y = x\n  return y\nend\n"
+            .. "local total = 0\nfor i = start(1), 3 do total = total + i end\n"
+            .. "return total, table.concat(out, ',')\n",
         }) do
         local out = ecl.render((macro.expand(ecl.tokens(case, "lua"), "lua", ecl)))
         local _, expansion_report = macro.expand(ecl.tokens(case, "lua"), "lua", ecl)
@@ -83,8 +104,6 @@ return function(h)
             "--@inline\nlocal function add(self, n) return self.value + n end\n"
             .. "local function make() return { value = 4, add = add } end\nreturn make():add(3)\n",
             "--@inline self\nlocal function f(x) return x end\nlocal obj = {f = f}\nreturn obj:f(3)\n",
-            "--@inline\nlocal function f(x) return x end\nreturn f{1}\n",
-            "--@inline\nlocal function f(x) return x end\nreturn f'x'\n",
             "local function f() return 1 end\n--@inline\nlocal function twice(x) return x + x end\nreturn ok and twice(f())\n",
             "local o = { v = 1 }\nfunction o:add(x) return self.v + x end\nlocal function f() return 1 end\n"
             .. "--@inline\nlocal function twice(x) return x + x end\nreturn o:add(twice(f()))\n",
@@ -166,8 +185,12 @@ return function(h)
 
     local no_tail = "--@inline\nlocal function f(x)\n  print(x)\nend\nlocal a = f(1)\nreturn a\n"
     local no_tail_out, no_tail_report = macro.expand(ecl.tokens(no_tail, "lua"), "lua", ecl)
-    if no_tail_report.expanded ~= 0 or #no_tail_report.warnings == 0 then
-        fail("hoist accepted a body with no return", ecl.render(no_tail_out))
+    local no_tail_source = ecl.render(no_tail_out)
+    local no_tail_before, no_tail_after = loadstring(no_tail), loadstring(no_tail_source)
+    if no_tail_report.expanded == 0 or not no_tail_after then
+        fail("hoist refused a body with no return", no_tail_source)
+    elseif no_tail_before() ~= no_tail_after() then
+        fail("hoist changed a body with no return", no_tail_source)
     end
 
     local nested = [[
@@ -208,6 +231,29 @@ return wrap()
     local ok_after, b1, b2 = pcall(assert(loadstring(nested_source)))
     if not ok_after or a1 ~= b1 or a2 ~= b2 or not ok_before then
         fail("nested macros changed the result", nested_source)
+    end
+
+    -- Inlining accounts for every local it introduces, but macro declarations
+    -- that the final pass drops do not count against the caller's function.
+    local function local_case(count)
+        local names = {}
+        for index = 1, count do
+            names[index] = "v" .. index
+        end
+        return "local function run(x)\n local " .. table.concat(names, ",")
+            .. "\n --@inline\n local function twice(y) return y + y end\n twice(x + 1)\n return x\nend\nreturn run(1)\n"
+    end
+    local at_limit, at_limit_report = macro.expand(ecl.tokens(local_case(197), "lua"), "lua", ecl)
+    local at_limit_source = ecl.render(at_limit)
+    if #(at_limit_report.errors or {}) ~= 0 or at_limit_report.expanded == 0 or not loadstring(at_limit_source) then
+        fail("inline counted a macro declaration that was dropped", at_limit_source)
+    end
+    local over_limit = local_case(198)
+    local over_out, over_report = macro.expand(ecl.tokens(over_limit, "lua"), "lua", ecl)
+    if #(over_report.errors or {}) ~= 1 then
+        fail("inline did not report the local variable limit", ("%q -> %q"):format(over_limit, ecl.render(over_out)))
+    elseif not over_report.errors[1].text:find("would leave 201 locals", 1, true) then
+        fail("inline reported the wrong local variable count", over_report.errors[1].text)
     end
 
     local callback = [[

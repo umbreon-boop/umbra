@@ -25,6 +25,7 @@ function documentation.run(library, options)
             out[#out + 1] = line
         end
         pipe:close()
+        table.sort(out)
         return out
     end
 
@@ -443,13 +444,17 @@ function documentation.run(library, options)
 
     local function process_file(path)
         local source = read(path)
-        local decls, derr = ecl.declarations(source, dialect)
-        if not decls then
+        local chunk, derr = ecl.parse(source, dialect)
+        if not chunk then
             diagnostics.error(("could not parse `%s`"):format(path), nil, derr)
             return
         end
-        local type_spans = ecl.type_spans(source, dialect) or {}
-        local tokens = ecl.tokens(source, dialect) or {}
+        -- One parse supplies declarations, type spans, and tokens. The old
+        -- path re-parsed and re-lexed the same file four times.
+        local decls = chunk:declarations()
+        local type_spans = chunk:type_spans() or {}
+        local tokens = chunk:tokens() or {}
+        chunk:free()
 
         local rel = path:gsub("^" .. root:gsub("(%W)", "%%%1") .. "/?", "")
 
@@ -470,22 +475,24 @@ function documentation.run(library, options)
 
         -- Consecutive `---` lines form one block, as above declarations.
         local comments = {}
-        for _, comment in ipairs(ecl.comments(source, dialect) or {}) do
-            local previous = comments[#comments]
-            local joined = previous and previous.dashes and comment.text:sub(1, 3) == "---"
-            and source:sub(previous.end_ + 1, comment.start - 1):match("^[ \t]*\r?\n[ \t]*$")
-            if joined then
-                for _, line in ipairs(comment_body(comment.text)) do
-                    table.insert(previous.lines, line)
+        for _, comment in ipairs(tokens) do
+            if comment.is_comment then
+                local previous = comments[#comments]
+                local joined = previous and previous.dashes and comment.text:sub(1, 3) == "---"
+                    and source:sub(previous.end_ + 1, comment.start - 1):match("^[ \t]*\r?\n[ \t]*$")
+                if joined then
+                    for _, line in ipairs(comment_body(comment.text)) do
+                        table.insert(previous.lines, line)
+                    end
+                    previous.end_ = comment.end_
+                else
+                    comments[#comments + 1] = {
+                        start = comment.start,
+                        end_ = comment.end_,
+                        lines = comment_body(comment.text),
+                        dashes = comment.text:sub(1, 3) == "---",
+                    }
                 end
-                previous.end_ = comment.end_
-            else
-                comments[#comments + 1] = {
-                    start = comment.start,
-                    end_ = comment.end_,
-                    lines = comment_body(comment.text),
-                    dashes = comment.text:sub(1, 3) == "---",
-                }
             end
         end
 
@@ -675,7 +682,13 @@ function documentation.run(library, options)
                 skipped = skipped + 1
             end
         end
-        for key, block in pairs(floating) do
+        local floating_keys = {}
+        for key in pairs(floating) do
+            floating_keys[#floating_keys + 1] = key
+        end
+        table.sort(floating_keys)
+        for _, key in ipairs(floating_keys) do
+            local block = floating[key]
             if not matched[key] then
                 local name = block["function"] or block.method
                 local target = block.within or scope_at_pending(block.at or 0)

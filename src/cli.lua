@@ -1,4 +1,3 @@
-local modules = require("modules")
 local diagnostics = require("diag")
 
 local function paint(code, text)
@@ -49,6 +48,8 @@ local builtins = {
     {
         name = "fmt",
         description = "Format Lua source files",
+        needs_eclipsed = false,
+        needs_interface = false,
         load = function()
             return require("cli.fmt")
         end,
@@ -88,12 +89,16 @@ local warned = {}
 
 -- Built-in commands followed by user modules, as `{ name, description,
 -- load }`. A module named like a built-in is skipped with a warning.
-function cli.commands(options)
+function cli.commands(options, skip_modules)
     local list, taken = {}, {}
     for _, command in ipairs(builtins) do
         list[#list + 1] = command
         taken[command.name] = true
     end
+    if skip_modules then
+        return list
+    end
+    local modules = require("modules")
     for _, module in ipairs(modules.discover(options and options.directories)) do
         if taken[module.name] then
             if not warned[module.path] then
@@ -147,13 +152,21 @@ end
 
 function cli.run(arguments, options)
     local values = arguments or {}
-    local commands = cli.commands(options)
     if #values == 0 or values[1] == "-h" or values[1] == "--help" then
+        local commands = cli.commands(options)
         cli.usage(commands)
         return values[1] ~= nil
     end
 
     local name, command = values[1], nil
+    local builtin = false
+    for _, candidate in ipairs(builtins) do
+        if candidate.name == name then
+            builtin = true
+            break
+        end
+    end
+    local commands = cli.commands(options, builtin)
     for _, candidate in ipairs(commands) do
         if candidate.name == name then
             command = candidate
@@ -200,7 +213,10 @@ function cli.run(arguments, options)
         )
         return false
     end
-    local umbra = interface(library, options)
+    local umbra
+    if command.needs_interface ~= false then
+        umbra = interface(library, options)
+    end
     local ok, result, message = pcall(fn, command_arguments, library, umbra)
     if not ok then
         io.stderr:write(("%s %s\n"):format(paint("1;31", "error:"), result))

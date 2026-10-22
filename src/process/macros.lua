@@ -10,6 +10,16 @@ function macro_stage.run(tokens, dialect, context, library)
     for _, warning in ipairs(report.warnings) do
         context.report(warning)
     end
+    if report.errors and #report.errors > 0 then
+        for _, entry in ipairs(report.errors) do
+            if context.report_error then
+                context.report_error(entry)
+            else
+                diag.error(entry.text, nil, entry.note)
+            end
+        end
+        return nil, "macro expansion exceeded the local variable limit"
+    end
     if report.expanded == 0 then
         return tokens
     end

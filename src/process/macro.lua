@@ -26,6 +26,11 @@ local macro = {}
 
 local MAX_ROUNDS = 16
 
+--- Lua and LuaJIT give each function at most 200 live local variables.
+--- Inlining binds parameters, spills, and hoisted declarations to locals, so
+--- an expansion can push a function over that hard limit.
+local MAX_LOCALS = 200
+
 --- The inlining marker a comment carries: `macro` for a forced overwrite,
 --- `inline` for a suggestion, or nil. The name must end the word, so prose
 --- that mentions `@macro` or `@inline` cannot mark the next declaration.
@@ -46,6 +51,17 @@ local function warning(name, reason, token, mode)
     return {
         text = ("`--@%s %s` was not inlined"):format(marker, name),
         note = reason,
+        offset = token and token.start,
+        length = token and #token.text,
+    }
+end
+
+local function limit_error(name, count, token, mode)
+    local marker = mode == "macro" and "macro" or "inline"
+    return {
+        text = ("inlining `--@%s %s` would leave %d locals in scope"):format(marker, name, count),
+        note = ("Lua allows at most %d local variables in one function; "
+            .. "split the caller or the macro body into smaller functions"):format(MAX_LOCALS),
         offset = token and token.start,
         length = token and #token.text,
     }
@@ -294,9 +310,13 @@ end
 local function chain(node, info, ecl)
     local K = ecl.const
     local names = {}
-    while node.kind == K.EXPR_KIND_FIELD do
-        table.insert(names, 1, syntax.text(info.source, node.data.field.name))
-        node = node.data.field.table
+    while node.kind == K.EXPR_KIND_FIELD or node.kind == K.EXPR_KIND_PAREN do
+        if node.kind == K.EXPR_KIND_FIELD then
+            table.insert(names, 1, syntax.text(info.source, node.data.field.name))
+            node = node.data.field.table
+        else
+            node = node.data.paren
+        end
     end
     if node.kind ~= K.EXPR_KIND_NAME then
         return nil
@@ -487,28 +507,30 @@ local function sites_of(macros, info, ecl)
     syntax.walk(info, ecl, nil, function(node)
         if node.kind == K.EXPR_KIND_CALL then
             local call = node.data.call
-            if call.arguments.kind == K.ARGUMENTS_KIND_LIST then
-                local names, index = chain(call.callee, info, ecl)
-                if names then
-                    local record = #names == 1 and by_binding[info.owner[index]]
-                    if record then
-                        add(record, node, index, arguments_of(call.arguments.values))
-                    end
-                    for _, candidate in ipairs(qualified) do
-                        if not candidate.method and names_match(candidate, names, index, info) then
-                            add(candidate, node, index, arguments_of(call.arguments.values))
-                        end
+            -- `f(a)`, `f"s"` and `f{...}` all evaluate their one or more
+            -- arguments in order, so binding them to locals handles each.
+            local names, index = chain(call.callee, info, ecl)
+            if names then
+                local args = arguments_of(call.arguments.values)
+                local record = #names == 1 and by_binding[info.owner[index]]
+                if record then
+                    add(record, node, index, args)
+                end
+                for _, candidate in ipairs(qualified) do
+                    if not candidate.method and names_match(candidate, names, index, info) then
+                        add(candidate, node, index, args)
                     end
                 end
             end
         elseif node.kind == K.EXPR_KIND_METHOD_CALL then
             local call = node.data.method_call
             local names, index = chain(call.receiver, info, ecl)
-            if names and call.arguments.kind == K.ARGUMENTS_KIND_LIST then
+            if names then
                 names[#names + 1] = syntax.text(info.source, call.method)
+                local args = arguments_of(call.arguments.values)
                 for _, candidate in ipairs(qualified) do
                     if candidate.method and names_match(candidate, names, index, info) then
-                        add(candidate, node, index, arguments_of(call.arguments.values), call.receiver)
+                        add(candidate, node, index, args, call.receiver)
                     end
                 end
             end
@@ -570,25 +592,24 @@ local function substitution_refusal(site, ecl)
     local record = site.record
     if record.kind == "statement" then
         if site.position == "expression" then
+            -- A tail return can supply this value after its earlier
+            -- statements hoist above the containing statement.
+            if record.tail_return then
+                return nil
+            end
             return "a statement macro is used as an expression"
         end
         if site.position == "hoist" then
-            if not record.tail_return then
-                return "its body does not end in a return that can supply this value"
-            end
-            if record.force then
-                return nil
-            end
-            if #record.params == 0 and not record.method and #site.args > 0 then
-                return "its arguments would be discarded"
+            -- With no return at all the call supplies nil, which an
+            -- initializer can get by running the body and leaving the
+            -- declared name unset.
+            if not record.tail_return and record.returns then
+                return "its body returns before it can supply this value"
             end
             return nil
         end
         if record.force then
             return nil
-        end
-        if #record.params == 0 and not record.method and #site.args > 0 then
-            return "its arguments would be discarded"
         end
         if record.returns and site.position ~= "return" then
             return "its body returns, which would return from the caller"
@@ -930,6 +951,14 @@ local function lift_point(site, info, ecl)
         heads = { node.data.call }
     elseif statement.kind == K.STMT_KIND_IF and not node.data.if_.binding.present then
         heads = { node.data.if_.condition }
+    elseif statement.kind == K.STMT_KIND_NUMERIC_FOR then
+        local loop = node.data.numeric_for
+        heads = { loop.start, loop.limit }
+        if loop.step ~= nil then
+            heads[#heads + 1] = loop.step
+        end
+    elseif statement.kind == K.STMT_KIND_GENERIC_FOR then
+        heads = items(node.data.generic_for.iterators)
     end
     if not heads then
         return nil
@@ -951,14 +980,17 @@ end
 local function refusal(site, ecl, info)
     local reason = substitution_refusal(site, ecl)
     local record = site.record
-    if record.kind == "statement" and site.position == "hoist" and not record.force then
-        if reason and not record.tail_return then
+    if record.kind == "statement" and (site.position == "hoist" or site.position == "expression") then
+        local supplies = record.tail_return or (site.position == "hoist" and not record.returns)
+        if not supplies then
             return reason
         end
         site.statement, site.spills = lift_point(site, info, ecl)
         if not site.statement then
             return "an earlier expression cannot be moved ahead of the hoisted body"
         end
+        site.hoisted = true
+        site.first, site.last = site.statement.first, site.statement.last
         return nil
     end
     if reason and record.kind == "expression" and not record.force then
@@ -1231,8 +1263,10 @@ local function expansion(tokens, info, site, id, ecl, taken)
     end
 
     -- A statement macro that ends in a return can supply a value: its earlier
-    -- statements move above the assignment and the call becomes the return.
-    if site.position == "hoist" then
+    -- statements move above the statement holding the call and the call
+    -- becomes the returned expression. A body with no return supplies nil in
+    -- an initializer or assignment after its side effects run.
+    if site.hoisted then
         local by_slot = { [0] = site.receiver }
         for slot, value in ipairs(site.args) do
             by_slot[slot] = value
@@ -1280,6 +1314,11 @@ local function expansion(tokens, info, site, id, ecl, taken)
         end
         for _, value in ipairs(site.args) do
             bind_values[#bind_values + 1] = value
+        end
+        if #bind_names == 0 and #bind_values > 0 then
+            local discard = scope.fresh_names(taken, 1)[1]
+            taken[discard] = true
+            bind_names[1] = { text = discard, slot = nil }
         end
         local spills = site.spills or {}
         local spill_names = scope.fresh_names(taken, #spills)
@@ -1333,11 +1372,18 @@ local function expansion(tokens, info, site, id, ecl, taken)
                 emit(synth(";", "Semicolon", ecl))
                 emit(synth("\n", nil, ecl))
             end
-            for index = record.body_first, record.return_first - 1 do
+            local body_end = record.return_first and record.return_first - 1 or record.body_last
+            for index = record.body_first, body_end do
                 emit(hoisted(index))
             end
         end
         local function tail()
+            if not record.tail_result then
+                -- A function that never returns supplies nil to the
+                -- initializer or assignment after its side effects.
+                emit(synth("nil", "Nil", ecl))
+                return
+            end
             local first, last = range(info, record.tail_result)
             for at = first, last do
                 local owner = info.owner[at]
@@ -1367,6 +1413,13 @@ local function expansion(tokens, info, site, id, ecl, taken)
     end
     for _, value in ipairs(site.args) do
         values[#values + 1] = value
+    end
+    if #names == 0 and #values > 0 then
+        -- The macro takes no arguments, but Lua still evaluates them. Give
+        -- the first value a local so the rest are evaluated and discarded.
+        local discard = scope.fresh_names(taken, 1)[1]
+        taken[discard] = true
+        names[1] = { text = discard, slot = nil }
     end
 
     emit(synth("do", "Do", ecl))
@@ -1481,6 +1534,52 @@ local function splice(tokens, replacements, drop)
     return out
 end
 
+--- Errors for functions that still have more than `MAX_LOCALS` locals in
+--- scope once every expansion has run and unused macro declarations have been
+--- dropped. Each expanded token remembers the site that produced it, so the
+--- error points at a call in the function that is too large.
+local function limit_errors(tokens, after)
+    local errors, seen = {}, {}
+    local functions = {}
+    for func, peak in pairs(after.local_peaks or {}) do
+        if peak > MAX_LOCALS then
+            functions[#functions + 1] = { func = func, count = peak }
+        end
+    end
+    table.sort(functions, function(a, b)
+        return a.func < b.func
+    end)
+    local function fallback()
+        local site
+        for _, token in ipairs(tokens) do
+            local candidate = token.macro_site
+            if candidate and (not site or candidate.first < site.first) then
+                site = candidate
+            end
+        end
+        return site
+    end
+    local default = fallback()
+    for _, entry in ipairs(functions) do
+        local site
+        for index, token in ipairs(tokens) do
+            if after.func[index] == entry.func then
+                local candidate = token.macro_site
+                if candidate and (not site or candidate.first < site.first) then
+                    site = candidate
+                end
+            end
+        end
+        site = site or default
+        if site and not seen[site] then
+            seen[site] = true
+            local token = site.limit_token or tokens[site.call_first or site.first]
+            errors[#errors + 1] = limit_error(site.record.name, entry.count, token, site.record.mode)
+        end
+    end
+    return errors
+end
+
 local function prepare(tokens, info, ecl, warnings)
     local macros, rejected = find(tokens, info, ecl)
     for _, entry in ipairs(rejected) do
@@ -1533,6 +1632,7 @@ function macro.expand_once(tokens, dialect, ecl, info)
                     warnings[#warnings + 1] =
                     warning(record.name, reason .. " at this call", tokens[site.first], record.mode)
                 elseif site.first and site.last then
+                    site.limit_token = site.limit_token or tokens[site.call_first or site.first]
                     candidates[#candidates + 1] = site
                 end
             end
@@ -1551,7 +1651,11 @@ function macro.expand_once(tokens, dialect, ecl, info)
         local taken = setmetatable({}, { __index = info.used })
         for id, site in ipairs(candidates) do
             if not excluded[id] and site.first > taken_until then
-                replacements[site.first] = { last = site.last, tokens = expansion(tokens, info, site, id, ecl, taken) }
+                local generated = expansion(tokens, info, site, id, ecl, taken)
+                for _, token in ipairs(generated) do
+                    token.macro_site = site
+                end
+                replacements[site.first] = { last = site.last, tokens = generated }
                 expanded[id] = site
                 taken_until = site.last
                 count = count + 1
@@ -1658,23 +1762,35 @@ end
 
 function macro.expand(tokens, dialect, ecl)
     ecl = assert(ecl, "Eclipsed is required")
-    local warnings, expanded, info = {}, 0, nil
+    local warnings, errors, expanded, info = {}, {}, 0, nil
+    -- `macro_site` survives between expansion rounds so the final local limit
+    -- check can point at a call; it must not survive a new invocation.
+    for _, token in ipairs(tokens) do
+        token.macro_site = nil
+    end
     for _ = 1, MAX_ROUNDS do
         for _, token in ipairs(tokens) do
             token.macro_origin = nil
         end
         local out, report = macro.expand_once(tokens, dialect, ecl, info)
         warnings = report.warnings
+        for _, entry in ipairs(report.errors or {}) do
+            errors[#errors + 1] = entry
+        end
         tokens, expanded, info = out, expanded + report.expanded, report.info
         if report.expanded == 0 then
             break
         end
     end
-    if expanded > 0 then
+    if expanded > 0 and #errors == 0 then
         tokens = drop_unused(tokens, dialect, ecl, info)
+        local after = scope.resolve(tokens, ecl, dialect)
+        if after then
+            errors = limit_errors(tokens, after)
+        end
     end
 
-    local seen, unique = {}, {}
+    local seen, unique, seen_errors, unique_errors = {}, {}, {}, {}
     for _, entry in ipairs(warnings) do
         local id = entry.text .. "|" .. tostring(entry.note) .. "|" .. tostring(entry.offset)
         if not seen[id] then
@@ -1682,7 +1798,14 @@ function macro.expand(tokens, dialect, ecl)
             unique[#unique + 1] = entry
         end
     end
-    return tokens, { warnings = unique, expanded = expanded }
+    for _, entry in ipairs(errors) do
+        local id = entry.text .. "|" .. tostring(entry.note) .. "|" .. tostring(entry.offset)
+        if not seen_errors[id] then
+            seen_errors[id] = true
+            unique_errors[#unique_errors + 1] = entry
+        end
+    end
+    return tokens, { warnings = unique, errors = unique_errors, expanded = expanded }
 end
 
 return macro

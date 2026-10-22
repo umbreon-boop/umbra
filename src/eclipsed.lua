@@ -1,4 +1,5 @@
 local ffi = require("ffi")
+local new_table = require("table.new")
 
 local ABI_VERSION = 2
 
@@ -291,25 +292,44 @@ local function is_comment_kind(kind)
     return kind == eclipsed.LINE_COMMENT or kind == eclipsed.LONG_COMMENT or kind == eclipsed.C_COMMENT
 end
 
-local function convert_tokens(raw, count, source)
+local function convert_tokens(raw, count, source, skip_whitespace, want_positions, code_only)
     local trivia = eclipsed.const.TRIVIA_WHITESPACE
-    local out = {}
-    for i = 0, tonumber(count) - 1 do
+    local syntax = eclipsed.SYNTAX
+    local whitespace = eclipsed.WHITESPACE
+    local line_comment = eclipsed.LINE_COMMENT
+    local long_comment = eclipsed.LONG_COMMENT
+    local c_comment = eclipsed.C_COMMENT
+    local sub = string.sub
+    count = tonumber(count)
+    local out = new_table(count, 0)
+    local at, ending
+    if want_positions then
+        at, ending = new_table(0, count), new_table(0, count)
+    end
+    local written = 0
+    for i = 0, count - 1 do
         local token = raw[i]
         local id = tonumber(token.token_type)
-        local kind = id >= trivia and id - trivia + eclipsed.WHITESPACE or eclipsed.SYNTAX
-        local first, last = token.start + 1, token["end"]
-        out[i + 1] = {
-            kind = kind,
-            type = id,
-            start = first,
-            end_ = last,
-            text = source:sub(first, last),
-            is_trivia = kind ~= eclipsed.SYNTAX,
-            is_comment = is_comment_kind(kind),
-        }
+        if not skip_whitespace or id ~= trivia then
+            local kind = id >= trivia and id - trivia + whitespace or syntax
+            local first, last = token.start + 1, token["end"]
+            written = written + 1
+            out[written] = {
+                kind = kind,
+                type = id,
+                start = first,
+                end_ = last,
+                text = sub(source, first, last),
+                is_trivia = kind ~= syntax,
+                is_comment = kind == line_comment or kind == long_comment or kind == c_comment,
+            }
+            if at and kind == syntax then
+                at[first - 1] = written
+                ending[last] = written
+            end
+        end
     end
-    return out
+    return out, at, ending
 end
 
 --[=[
@@ -321,7 +341,7 @@ end
     @return { EclToken } -- the token records
     @return string -- the failure message, when lexing fails
 ]=]
-function eclipsed.tokens(source, dialect)
+function eclipsed.tokens(source, dialect, skip_whitespace)
     local id = dialect_id(dialect)
     local array = ffi.new("EclTokenArray[1]")
     local ok, err = attempt(function(e)
@@ -330,7 +350,7 @@ function eclipsed.tokens(source, dialect)
     if not ok then
         return nil, err
     end
-    local out = convert_tokens(array[0].ptr, array[0].len, source)
+    local out = convert_tokens(array[0].ptr, array[0].len, source, skip_whitespace)
     lib().ecl_token_array_free(array)
     return out
 end
@@ -458,10 +478,10 @@ end
 
     @return { EclToken } -- the token records
 ]=]
-function Chunk:tokens()
+function Chunk:tokens(skip_whitespace, want_positions, code_only)
     local count = ffi.new("size_t[1]")
     local raw = lib().ecl_chunk_tokens(live(self), count)
-    return convert_tokens(raw, count[0], self.source)
+    return convert_tokens(raw, count[0], self.source, skip_whitespace, want_positions, code_only)
 end
 
 --[=[

@@ -74,8 +74,7 @@ function docs_command.run(arguments, library)
         usage()
         return true
     end
-    local exists = os.execute("test -e " .. require("shell").quote(options.root))
-    if exists ~= true and exists ~= 0 then
+    if not os.rename(options.root, options.root) then
         return false, ("no such file or directory '%s'"):format(options.root)
     end
     return process_documentation.run(library, options) ~= nil and diagnostics.counts.error == 0

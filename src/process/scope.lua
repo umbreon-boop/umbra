@@ -1,4 +1,5 @@
 local new_table = require("table.new")
+local syntax = require("process.syntax")
 
 local scope = {}
 
@@ -13,6 +14,126 @@ function scope.layout(tokens)
     return table.concat(parts), starts
 end
 
+--- Parses `tokens` and indexes the syntax nodes the formatter needs, without
+--- resolving names. This is the cheap subset of `scope.resolve` used by the
+--- printer.
+function scope.index(tokens, ecl, dialect, original_source, parsed, positions)
+    ecl = assert(ecl, "Eclipsed is required")
+    local source, starts
+    local at, ending
+    if positions then
+        source = original_source
+        at, ending = positions.at, positions.ending
+    elseif original_source then
+        at, ending = new_table(0, #tokens), new_table(0, #tokens)
+        for i, token in ipairs(tokens) do
+            if not token.start then
+                original_source = nil
+                at, ending = nil, nil
+                break
+            end
+            if not token.is_trivia then
+                local start = token.start - 1
+                at[start] = i
+                ending[start + #token.text] = i
+            end
+        end
+    end
+    if not original_source then
+        source, starts = scope.layout(tokens)
+    else
+        source = original_source
+    end
+    local chunk, err = parsed, nil
+    if not chunk then
+        chunk, err = ecl.parse(source, dialect or "luau")
+        if not chunk and not dialect then
+            chunk, err = ecl.parse(source, "lua")
+        end
+    end
+    if not chunk then
+        return nil, err
+    end
+
+    if not at then
+        at, ending = new_table(0, #tokens), new_table(0, #tokens)
+        for i, token in ipairs(tokens) do
+            if not token.is_trivia then
+                local start = starts[i]
+                at[start] = i
+                ending[start + #token.text] = i
+            end
+        end
+    end
+    if not source then
+        return nil, "missing source"
+    end
+
+    local collected = {
+        if_nodes = {},
+        tables = {},
+        calls = {},
+        binaries = {},
+        functions = {},
+        function_expressions = {},
+        returns = {},
+        cast_parens = {},
+        structural_spans = {},
+    }
+    local info = {
+        source = source,
+        chunk = chunk,
+        at = at,
+        ending = ending,
+        statements = {},
+        syntax = collected,
+    }
+    local K = ecl.const
+    info.root, info.root_count = chunk:statements()
+
+    syntax.walk(info, ecl, function(node)
+        local first = at[node.span.start]
+        local last = ending[node.span["end"]]
+        local kind = node.kind
+        if kind == K.STMT_KIND_IF or kind == K.STMT_KIND_WHILE then
+            info.has_conditionals = true
+        elseif kind == K.STMT_KIND_NUMERIC_FOR or kind == K.STMT_KIND_GENERIC_FOR then
+            info.has_for = true
+        end
+        info.statements[#info.statements + 1] = {
+            first = first,
+            last = last,
+            kind = kind,
+            node = node,
+        }
+        if kind == K.STMT_KIND_LOCAL_FUNCTION then
+            collected.functions[#collected.functions + 1] = node.data.local_function.body
+        elseif kind == K.STMT_KIND_FUNCTION then
+            collected.functions[#collected.functions + 1] = node.data["function"].body
+        elseif kind == K.STMT_KIND_RETURN then
+            collected.returns[#collected.returns + 1] = node
+        end
+    end, function(node)
+        local kind = node.kind
+        if kind == K.EXPR_KIND_IF_ELSE then
+            collected.if_nodes[#collected.if_nodes + 1] = node
+        elseif kind == K.EXPR_KIND_TABLE then
+            collected.tables[#collected.tables + 1] = node
+        elseif kind == K.EXPR_KIND_CALL or kind == K.EXPR_KIND_METHOD_CALL then
+            collected.calls[#collected.calls + 1] = node
+        elseif kind == K.EXPR_KIND_BINARY then
+            collected.binaries[#collected.binaries + 1] = node
+        elseif kind == K.EXPR_KIND_FUNCTION then
+            collected.functions[#collected.functions + 1] = node.data["function"]
+            collected.function_expressions[#collected.function_expressions + 1] = node
+        end
+        if kind == K.EXPR_KIND_PAREN and node.data.paren.kind == K.EXPR_KIND_CAST then
+            collected.cast_parens[#collected.cast_parens + 1] = node
+        end
+    end)
+    return info
+end
+
 --- Resolves every name in `tokens` by parsing their rendering.
 ---
 --- Returns `nil, message` when the tokens do not parse. Otherwise the info
@@ -25,12 +146,25 @@ end
 --- as inside an interpolated string, is `pinned`. `functions[id].parent`
 --- links function ids, with 0 for the chunk. `statements` lists every
 --- statement's `first` and `last` token index, `kind` and `node`.
-function scope.resolve(tokens, ecl, dialect)
+--- `local_peaks[func]` is the most locals that function has in scope at once.
+function scope.resolve(tokens, ecl, dialect, collect_syntax, original_source, parsed)
     ecl = assert(ecl, "Eclipsed is required")
-    local source, starts = scope.layout(tokens)
-    local chunk, err = ecl.parse(source, dialect or "luau")
-    if not chunk and not dialect then
-        chunk, err = ecl.parse(source, "lua")
+    local source, starts
+    if original_source then
+        source = original_source
+        starts = new_table(#tokens, 0)
+        for i, token in ipairs(tokens) do
+            starts[i] = token.start - 1
+        end
+    else
+        source, starts = scope.layout(tokens)
+    end
+    local chunk, err = parsed, nil
+    if not chunk then
+        chunk, err = ecl.parse(source, dialect or "luau")
+        if not chunk and not dialect then
+            chunk, err = ecl.parse(source, "lua")
+        end
     end
     if not chunk then
         return nil, err
@@ -69,6 +203,21 @@ function scope.resolve(tokens, ecl, dialect)
         ending = ending,
     }
     local bindings, owner, access = info.bindings, info.owner, info.access
+    local collected
+    if collect_syntax then
+        collected = {
+            if_nodes = {},
+            tables = {},
+            calls = {},
+            binaries = {},
+            functions = {},
+            function_expressions = {},
+            returns = {},
+            cast_parens = {},
+            structural_spans = {},
+        }
+        info.syntax = collected
+    end
 
     local function text(range)
         return source:sub(range.start + 1, range["end"])
@@ -80,12 +229,24 @@ function scope.resolve(tokens, ecl, dialect)
         end
     end
 
-    local scopes = { {} }
+    local scopes = { { names = {}, count = 0 } }
     local current_function = 0
+    -- Locals are registers: every declaration in a live block occupies one
+    -- until that block ends, while nested functions have their own budget.
+    local local_counts, local_peaks = { [0] = 0 }, { [0] = 0 }
+
+    local function held(count)
+        local func = current_function
+        local active = (local_counts[func] or 0) + count
+        local_counts[func] = active
+        if active > (local_peaks[func] or 0) then
+            local_peaks[func] = active
+        end
+    end
 
     local function lookup(name)
         for level = #scopes, 1, -1 do
-            local binding = scopes[level][name]
+            local binding = scopes[level].names[name]
             if binding then
                 return binding
             end
@@ -113,7 +274,10 @@ function scope.resolve(tokens, ecl, dialect)
         else
             binding.pinned = true
         end
-        scopes[#scopes][name] = binding
+        local frame = scopes[#scopes]
+        frame.names[name] = binding
+        frame.count = frame.count + 1
+        held(1)
         return binding
     end
 
@@ -142,9 +306,13 @@ function scope.resolve(tokens, ecl, dialect)
     end
 
     local function push()
-        scopes[#scopes + 1] = {}
+        scopes[#scopes + 1] = { names = {}, count = 0 }
     end
     local function pop()
+        local frame = scopes[#scopes]
+        for _ = 1, frame.count do
+            held(-1)
+        end
         scopes[#scopes] = nil
     end
 
@@ -169,6 +337,7 @@ function scope.resolve(tokens, ecl, dialect)
         local id = #info.functions + 1
         info.functions[id] = { parent = parent, node = body }
         current_function = id
+        local_counts[id], local_peaks[id] = 0, 0
         push()
         if method then
             local binding = {
@@ -181,7 +350,9 @@ function scope.resolve(tokens, ecl, dialect)
                 receiver = receiver,
             }
             bindings[binding.id] = binding
-            scopes[#scopes].self = binding
+            scopes[#scopes].names.self = binding
+            scopes[#scopes].count = scopes[#scopes].count + 1
+            held(1)
         end
         each(body.type_parameters, function(parameter)
             optional_type(parameter.default_type)
@@ -203,9 +374,27 @@ function scope.resolve(tokens, ecl, dialect)
         expressions(args.values)
     end
 
+    local skip_collect = 0
+
     function expression(node)
         local kind = node.kind
         local data = node.data
+        if collected and skip_collect == 0 then
+            if kind == K.EXPR_KIND_IF_ELSE then
+                collected.if_nodes[#collected.if_nodes + 1] = node
+            elseif kind == K.EXPR_KIND_TABLE then
+                collected.tables[#collected.tables + 1] = node
+            elseif kind == K.EXPR_KIND_CALL or kind == K.EXPR_KIND_METHOD_CALL then
+                collected.calls[#collected.calls + 1] = node
+            elseif kind == K.EXPR_KIND_BINARY then
+                collected.binaries[#collected.binaries + 1] = node
+            elseif kind == K.EXPR_KIND_FUNCTION then
+                collected.functions[#collected.functions + 1] = data["function"]
+                collected.function_expressions[#collected.function_expressions + 1] = node
+            elseif kind == K.EXPR_KIND_PAREN and data.paren.kind == K.EXPR_KIND_CAST then
+                collected.cast_parens[#collected.cast_parens + 1] = node
+            end
+        end
         if kind == K.EXPR_KIND_NAME then
             reference(node.span, "read")
         elseif kind == K.EXPR_KIND_UNARY then
@@ -259,7 +448,9 @@ function scope.resolve(tokens, ecl, dialect)
     function annotation(node)
         local kind, data = node.kind, node.data
         if kind == K.TYPE_KIND_TYPEOF then
+            skip_collect = skip_collect + 1
             expression(data.typeof_)
+            skip_collect = skip_collect - 1
         elseif kind == K.TYPE_KIND_ARRAY or kind == K.TYPE_KIND_OPTIONAL or kind == K.TYPE_KIND_VARIADIC then
             annotation(data.inner)
         elseif kind == K.TYPE_KIND_MAP then
@@ -311,6 +502,15 @@ function scope.resolve(tokens, ecl, dialect)
         local kind, data = node.kind, node.data
         local first, last = at[node.span.start], ending[node.span["end"]]
         info.statements[#info.statements + 1] = { first = first, last = last, kind = kind, node = node }
+        if collected then
+            if kind == K.STMT_KIND_LOCAL_FUNCTION then
+                collected.functions[#collected.functions + 1] = data.local_function.body
+            elseif kind == K.STMT_KIND_FUNCTION then
+                collected.functions[#collected.functions + 1] = data["function"].body
+            elseif kind == K.STMT_KIND_RETURN then
+                collected.returns[#collected.returns + 1] = node
+            end
+        end
 
         if kind == K.STMT_KIND_LOCAL or kind == K.STMT_KIND_CONST then
             expressions(data["local"].values)
@@ -401,6 +601,7 @@ function scope.resolve(tokens, ecl, dialect)
         statement(root[i])
     end
     info.root, info.root_count = root, count
+    info.local_peaks = local_peaks
     return info
 end
 

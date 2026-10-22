@@ -17,13 +17,23 @@ local function supports_colour()
     if not term or term == "dumb" then
         return false
     end
+    local ok, ffi = pcall(require, "ffi")
+    if ok then
+        pcall(ffi.cdef, "int isatty(int fd);")
+        local called, answer = pcall(function()
+            return ffi.C.isatty(2)
+        end)
+        if called then
+            return answer ~= 0
+        end
+    end
     local pipe = io.popen("test -t 2 && echo yes 2>/dev/null")
     if not pipe then
         return false
     end
-    local answer = pipe:read("*l")
+    local reply = pipe:read("*l")
     pipe:close()
-    return answer == "yes"
+    return reply == "yes"
 end
 
 local COLOUR = supports_colour()

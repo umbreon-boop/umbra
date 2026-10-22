@@ -83,6 +83,16 @@ end
 
 local function context(modules, order, entry_path)
     local source, locate = assemble(modules, order, entry_path)
+    local function place(entry)
+        local where = locate(entry.offset)
+        if where then
+            if where.path == generated then
+                return nil
+            end
+            where.length = entry.length
+        end
+        return where
+    end
     return {
         source = source,
         module_count = #order,
@@ -95,6 +105,9 @@ local function context(modules, order, entry_path)
                 where.length = warning.length
             end
             diagnostics.warn(warning.text, where, warning.note)
+        end,
+        report_error = function(entry)
+            diagnostics.error(entry.text, place(entry), entry.note)
         end,
     }
 end
@@ -112,16 +125,18 @@ function bundle.run(library, options)
     }
     local modules, order = collect.collect(library, entry_path, options.dialect, roots, package_context)
     local assembled = context(modules, order, entry_path)
-    local ok, parse_error = library.check(assembled.source, options.dialect)
-    if not ok then
+    local chunk, parse_error = library.parse(assembled.source, options.dialect)
+    if not chunk then
         diagnostics.error("the assembled bundle does not parse", nil, parse_error)
         return nil
     end
     if options.plain then
+        chunk:free()
         return assembled.source, assembled.module_count
     end
 
-    local tokens = library.tokens(assembled.source, options.dialect)
+    local tokens = chunk:tokens()
+    chunk:free()
     if not tokens then
         diagnostics.error("the assembled bundle does not lex")
         return nil

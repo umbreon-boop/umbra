@@ -23,7 +23,10 @@ by binding, never by name, so another function that happens to be called
 `@inline` substitutes only where the meaning is preserved. A statement macro
 comes out as `do local <params> = <arguments> <body> end`, so each argument is
 evaluated once and in order. An expression macro substitutes its arguments
-where each is evaluated in the same order and the same number of times.
+where each is evaluated in the same order and the same number of times. Extra
+arguments are evaluated and discarded, missing ones are `nil`, and both
+`f(a)` and the `f"text"` / `f{...}` call forms are recognised. A macro that
+takes no parameters still evaluates the arguments given to it before its body.
 
 Where that is not true, the arguments are bound to fresh locals in a block
 before the statement that holds the call:
@@ -42,8 +45,9 @@ end
 
 The call can be the statement itself, a returned or assigned value, or part
 of a larger expression in a `local`, an assignment, a `return`, a call
-statement or the first condition of an `if`. In a larger expression, the
-parts that the statement evaluates before the call are bound to fresh locals
+statement, the first condition of an `if`, or a numeric or generic `for`
+header. In a larger expression, the parts that the statement evaluates before
+the call are bound to fresh locals
 first, in the same order, unless they cannot change: constants, locals that
 are never assigned again, and globals the chunk never assigns. If the chunk
 uses `_G`, `rawset`, or `setfenv`, globals are treated as changeable. Field
@@ -62,11 +66,19 @@ return n + (a + a)
 end
 ```
 
-A call in a loop condition, an `elseif`, the right side of `and` or `or`, or
-an `if` expression branch is evaluated only sometimes, so it is left as a
+A call in a `while` condition, an `elseif`, the right side of `and` or `or`,
+or an `if` expression branch is evaluated only sometimes, so it is left as a
 normal call with a warning. So is a method call whose method name the chunk
-assigns, because the method is looked up before its arguments run. Every expansion is parsed again, and a site where a copied
-name would bind differently is also left alone with a warning.
+assigns, because the method is looked up before its arguments run. Every
+expansion is parsed again, and a site where a copied name would bind
+differently is also left alone with a warning.
+
+Because inlining binds arguments, spills, hoisted locals, and parameters to
+locals, it can push a function past Lua's hard limit of 200 variables in
+scope. Umbra measures that after macro declarations that are no longer used
+have been dropped, then reports which call would exceed the limit and stops
+instead of writing a bundle that LuaJIT cannot load. That is a compile error
+rather than an optimisation opportunity.
 
 ## `@macro` overwrites
 
@@ -94,9 +106,10 @@ used as a bare expression, is still left alone with a warning.
 
 ## Assignment hoisting
 
-A statement macro that ends in a single `return` can supply an initializer.
-The statements before the return move above the assignment and the call is
-replaced by the returned expression:
+A statement macro that ends in a single `return` can supply a value anywhere
+its earlier statements can move above the statement holding the call. The
+statements before the return move first and the call is replaced by the
+returned expression:
 
 ```lua
 --@inline
@@ -128,6 +141,7 @@ under fresh names. `@macro` keeps the names as written, in the caller's
 block, and copies the arguments into the returned expression, so it can
 shadow names and evaluate an argument twice.
 
-A body with more than one return, or with a return that is not last, cannot
-supply a value this way and is refused with a warning. That is one more
-reason `@inline` reports what it leaves alone.
+A body with no returns at all supplies `nil` to an initializer or assignment
+after its side effects run. A body with more than one return, or with a
+return that is not last, cannot supply a value this way and is refused with a
+warning. That is one more reason `@inline` reports what it leaves alone.

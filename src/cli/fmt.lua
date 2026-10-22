@@ -1,4 +1,3 @@
-local process_format = require("process.format")
 local diagnostics = require("diag")
 
 local function paint(code, text)
@@ -82,10 +81,14 @@ function format_command.run(arguments, library)
         usage()
         return true
     end
-    local exists = os.execute("test -e " .. require("shell").quote(options.root))
-    if exists ~= true and exists ~= 0 then
-        return false, ("no such file or directory '%s'"):format(options.root)
+    if not os.rename(options.root, options.root) then
+        local exists = os.execute("test -e " .. require("shell").quote(options.root))
+        if exists ~= true and exists ~= 0 then
+            return false, ("no such file or directory '%s'"):format(options.root)
+        end
     end
+    local process_format = require("process.format")
+    library = library or require("eclipsed").load()
     return process_format.run(library, options)
 end
 

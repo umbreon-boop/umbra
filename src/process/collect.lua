@@ -93,19 +93,24 @@ function collector.collect(ecl, entry_path, dialect, roots, package_context)
         if not source then
             error(("cannot read module %q"):format(path))
         end
-        local ok, err = ecl.check(source, dialect)
-        if not ok then
+        local chunk, err = ecl.parse(source, dialect or "luau")
+        if not chunk and not dialect then
+            chunk, err = ecl.parse(source, "lua")
+        end
+        if not chunk then
             error(("%s: %s"):format(path, err))
         end
-        local tokens = assert(ecl.tokens(source, dialect))
-        local info = assert(scope.resolve(tokens, ecl, dialect))
+        local tokens = chunk:tokens()
+        local info = assert(scope.resolve(tokens, ecl, dialect, nil, source, chunk))
+        local calls = collector.requires(tokens, ecl, info)
+        chunk:free()
 
         local replace = {}
         -- A shebang cannot stand inside a loader, and bundles add none.
         if tokens[1] and tokens[1].kind == ecl.SHEBANG then
             replace[1] = ""
         end
-        for _, call in ipairs(collector.requires(tokens, ecl, info)) do
+        for _, call in ipairs(calls) do
             local target, child_context
             if call.name:sub(1, 1) == "@" then
                 local alias = call.name:match("^@([%w_-]+)")
