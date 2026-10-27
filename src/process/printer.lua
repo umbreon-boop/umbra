@@ -2734,11 +2734,7 @@ local function layout_type_aliases(lines, tokens, opts, ecl, if_exprs, dialect)
                                     if not token.is_trivia then
                                         local kind, opening = delimiter_kind(token, ecl)
                                         if kind then
-                                            if opening then
-                                                depth = depth + 1
-                                            else
-                                                depth = math.max(depth - 1, 0)
-                                            end
+                                            depth = opening and depth + 1 or math.max(depth - 1, 0)
                                         elseif depth == 0 and (token.type == ecl.T.Comma or token.type == ecl.T.Semicolon) then
                                             local following = code_index(tokens, index + 1, close - 1)
                                             if following and tokens[following].type ~= ecl.T.RightCurlyBrace then
@@ -2757,11 +2753,7 @@ local function layout_type_aliases(lines, tokens, opts, ecl, if_exprs, dialect)
                                     if not token.is_trivia then
                                         local kind, opening = delimiter_kind(token, ecl)
                                         if kind then
-                                            if opening then
-                                                depth = depth + 1
-                                            else
-                                                depth = math.max(depth - 1, 0)
-                                            end
+                                            depth = opening and depth + 1 or math.max(depth - 1, 0)
                                         elseif depth == 0 and (token.text == "|" or token.text == "&") then
                                             operators[#operators + 1] = index
                                         end
@@ -2799,11 +2791,7 @@ local function layout_type_aliases(lines, tokens, opts, ecl, if_exprs, dialect)
                                     end
                                     local kind, opening = delimiter_kind(current, ecl)
                                     if kind then
-                                        if opening then
-                                            depth = depth + 1
-                                        else
-                                            depth = depth - 1
-                                        end
+                                        depth = opening and depth + 1 or depth - 1
                                     elseif depth == 1 and current.type == ecl.T.DoubleColon then
                                         cast = true
                                     elseif depth == 1 and current.type == ecl.T.Comma then
@@ -2888,11 +2876,7 @@ local function line_binary_operators(line, ecl)
         if token.kind ~= ecl.WHITESPACE then
             local kind, opening = delimiter_kind(token, ecl)
             if kind then
-                if opening then
-                    depth = depth + 1
-                else
-                    depth = math.max(depth - 1, 0)
-                end
+                depth = opening and depth + 1 or math.max(depth - 1, 0)
             else
                 local precedence = binary_precedence(token.type, ecl)
                 if precedence and depth == 0 and not is_unary(token, previous, ecl) then
@@ -3127,11 +3111,7 @@ local function top_level_assign(tokens, first, last, ecl)
         if not token.is_trivia then
             local kind, opening = delimiter_kind(token, ecl)
             if kind then
-                if opening then
-                    depth = depth + 1
-                else
-                    depth = math.max(depth - 1, 0)
-                end
+                depth = opening and depth + 1 or math.max(depth - 1, 0)
             elseif depth == 0 and token.type == ecl.T.Assign then
                 return index
             end
@@ -3611,11 +3591,7 @@ local function break_condition(lines, target, ecl, if_exprs)
         if token.kind ~= ecl.WHITESPACE then
             local kind, opening = delimiter_kind(token, ecl)
             if kind then
-                if opening then
-                    depth = depth + 1
-                else
-                    depth = math.max(depth - 1, 0)
-                end
+                depth = opening and depth + 1 or math.max(depth - 1, 0)
             elseif depth == 0 and (token.type == T.Then or token.type == T.Do) then
                 terminator = token
             end
@@ -3657,11 +3633,7 @@ local function condition_terminators(tokens, ecl, if_exprs)
         if not token.is_trivia and not if_exprs[token] then
             local kind, opening = delimiter_kind(token, ecl)
             if kind then
-                if opening then
-                    depth = depth + 1
-                else
-                    depth = math.max(depth - 1, 0)
-                end
+                depth = opening and depth + 1 or math.max(depth - 1, 0)
             elseif token.type == T.If or token.type == T.Elseif or token.type == T.While
                 or token.type == T.For
             then
@@ -3740,11 +3712,7 @@ local function normalize_multiline_conditions(lines, tokens, opts, ecl, if_exprs
                             if not current.is_trivia then
                                 local kind, opening = delimiter_kind(current, ecl)
                                 if kind then
-                                    if opening then
-                                        depth = depth + 1
-                                    else
-                                        depth = math.max(depth - 1, 0)
-                                    end
+                                    depth = opening and depth + 1 or math.max(depth - 1, 0)
                                 elseif depth == 0 and (current.type == T.And or current.type == T.Or) then
                                     split_before_token(lines, current, ecl)
                                     current.condition_continuation = true
@@ -4080,11 +4048,7 @@ local function layout_for_in_tables(lines, tokens, info, expressions, ecl)
                 if not current.is_trivia then
                     local kind, opening = delimiter_kind(current, ecl)
                     if kind then
-                        if opening then
-                            depth = depth + 1
-                        else
-                            depth = math.max(depth - 1, 0)
-                        end
+                        depth = opening and depth + 1 or math.max(depth - 1, 0)
                     elseif depth == 0 and current.type == ecl.T.In then
                         in_token = inner
                     elseif depth == 0 and current.type == ecl.T.Do then

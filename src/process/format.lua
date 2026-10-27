@@ -337,11 +337,9 @@ function formatter.run(library, options)
     local paths = files(root)
     table.sort(paths)
     local result
-    if not check and #paths > 1 and not os.getenv("UMBRA_NO_PARALLEL") then
-        result = parallel_files(library, options, paths)
-    else
-        result = format_files(library, options, paths)
-    end
+    result = not check and #paths > 1 and not os.getenv("UMBRA_NO_PARALLEL")
+    and parallel_files(library, options, paths)
+    or format_files(library, options, paths)
 
     diagnostics.finished(
         check and "Checked" or "Formatted",
