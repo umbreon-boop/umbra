@@ -21,6 +21,16 @@ return function(h)
             .. "local function f() return Module.method(2) end\nreturn f()\n",
             "local Module = { value = 4 }\n--@inline\nfunction Module:method(x) return self.value + x end\n"
             .. "return Module:method(3)\n",
+            "local active = { Fire = function(self) return 1 end }\nlocal current\n"
+            .. "--@inline\nlocal function session() return active or current end\n"
+            .. "local function run()\n  session():Fire()\n  return 2\nend\nreturn run()\n",
+            "local active = { Fire = function(self) return 1 end }\nlocal current\n"
+            .. "--@inline\nlocal function session() return active or current end\n"
+            .. "local result = 0\nif true then\n  session():Fire()\n  result = 1\nelse\n"
+            .. "  session():Fire()\n  result = 2\nend\nreturn result\n",
+            "local active = { Fire = function(self) return 1 end }\nlocal current\n"
+            .. "--@inline\nlocal function session() return active or current end\n"
+            .. "local function first() end\nfirst()\nsession():Fire()\nreturn 1\n",
             "local y = 9\n--@inline\nlocal function inner(x) local y = x return y end\n"
             .. "local function f() return inner(3) end\nreturn f() .. y\n",
             "local y = 1\n--@inline\nlocal function f(x) local y = x * 2 return y end\nlocal z = f(3)\nreturn y + z * 10\n",

@@ -448,7 +448,7 @@ local function check_declared(manifest_path, node, owner)
     end
 end
 
-function dependencies.load()
+local function read_lock()
     local nodes = { ["."] = { root = ".", dependencies = {}, locked = {} } }
     local text = read(lock_name) or ""
     for line in (text .. "\n"):gmatch("([^\r\n]*)\r?\n") do
@@ -470,10 +470,44 @@ function dependencies.load()
             nodes[parent].locked[alias] = { git = git, commit = commit, rev = rev }
         end
     end
+    return nodes
+end
+
+--- Whether `nodes` is missing a snapshot or a declaration that `umbra update`
+--- would install.
+local function install_needed(nodes, declared)
+    if next(declared) == nil then return false end
+    for alias in pairs(declared) do
+        if not nodes["."].dependencies[alias] then return true end
+    end
+    for path in pairs(nodes) do
+        if path ~= "." and not exists_dir(path) then return true end
+    end
+    return false
+end
+
+local function check_all(nodes)
     check_declared(manifest_name, nodes["."])
     for path, node in pairs(nodes) do
         if path ~= "." then check_declared(path .. "/" .. manifest_name, node, path) end
     end
+end
+
+--- Loads the locked dependency graph. With `options.install`, a declared
+--- dependency that has no installed snapshot is resolved first, as `umbra
+--- update` would.
+function dependencies.load(options)
+    local nodes = read_lock()
+    if options and options.install then
+        local text, declared = parse_manifest(manifest_name)
+        if not text then error(declared, 0) end
+        if install_needed(nodes, declared) then
+            local records, err = update_graph(declared)
+            if not records then error(err, 0) end
+            nodes = read_lock()
+        end
+    end
+    check_all(nodes)
     return nodes["."].dependencies
 end
 

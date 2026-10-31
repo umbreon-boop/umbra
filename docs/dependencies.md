@@ -38,8 +38,11 @@ SHA. The lockfile stores every dependency edge (parent package, local alias,
 Git source, commit, exported path, and declared ref), so two libraries may use
 different versions or the same alias without colliding, and a changed ref is
 noticed before building. Commit `package.toml` and
-`package.lock`; treat `target/` as generated build output. Builds are offline
-and fail if a declared dependency has not been installed with `umbra update`.
+`package.lock`; treat `target/` as generated build output. Builds do not
+contact the network when every locked snapshot is present. If a declared
+dependency has not been installed, or a snapshot named by the lock is missing,
+`build` resolves the graph first, as `umbra update` would. A changed Git URL
+or ref still requires an explicit `umbra update`.
 
 ## Package-scoped imports
 

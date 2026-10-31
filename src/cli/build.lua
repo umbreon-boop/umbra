@@ -74,7 +74,7 @@ local function parse(arguments)
     options.entry = positional[1]
     options.output = options.output or "target/artifact.lua"
     if options.output == "-" then options.stdout = true end
-    options.dependencies = dependencies.load()
+    options.dependencies = dependencies.load({ install = true })
     return options
 end
 

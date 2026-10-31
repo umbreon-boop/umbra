@@ -1241,10 +1241,25 @@ local function expansion(tokens, info, site, id, ecl, taken)
         for slot, value in ipairs(site.args) do
             by_slot[slot] = value
         end
+        local starts_statement = false
         for _, statement in ipairs(info.statements) do
             if statement.first == site.first then
-                emit(synth(";", "Semicolon", ecl))
+                starts_statement = true
                 break
+            end
+        end
+        if starts_statement then
+            local previous = site.first - 1
+            while previous >= 1 and tokens[previous].is_trivia do
+                previous = previous - 1
+            end
+            -- A semicolon separates this statement from the one before it,
+            -- but a leading one is invalid at the start of a block.
+            for _, statement in ipairs(info.statements) do
+                if statement.last == previous then
+                    emit(synth(";", "Semicolon", ecl))
+                    break
+                end
             end
         end
         -- A call replaces a call exactly and keeps all its results.

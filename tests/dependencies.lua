@@ -176,6 +176,20 @@ return function(h)
             h.fail("a changed rev was not detected", build_output)
         end
     end
+    -- A build installs a declared dependency that has no exported tree.
+    local auto = fresh_project("auto-project")
+    write(auto .. "/main.lua", 'return require("@c")\n')
+    local auto_ok, auto_output = umbra(auto, "add c " .. q(child) .. " --rev " .. child_rev)
+    if not auto_ok then
+        h.fail("add for the auto-install project", auto_output)
+    else
+        os.execute("rm -rf " .. q(auto .. "/target"))
+        local build_ok, build_output = umbra(auto, "build main.lua -o -")
+        if not build_ok or not build_output:find("transitive value", 1, true) then
+            h.fail("build did not install a missing dependency", build_output)
+        end
+    end
+
     local leftover = io.popen("ls -A " .. q(tagged .. "/target")):read("*a")
     if leftover:find(".umbra-stage", 1, true) then h.fail("a staging directory was left behind", leftover) end
 
